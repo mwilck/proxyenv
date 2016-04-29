@@ -17,6 +17,87 @@ def lookup_in_PATH(cmd):
             return exe
     raise RuntimeError("command %s not found in PATH" % cmd)
 
+class DockerClient(object):
+
+    def test_if_running(self, id):
+        return False
+
+    def get_ip(self, id):
+        return ""
+
+    def stop(self, id):
+        pass
+        
+    def kill(self, id):
+        pass
+        
+    def rm(self, id):
+        pass
+
+    def run(self, image, args):
+        pass
+
+class DockerClientCmdline(DockerClient):
+
+    @classmethod
+    def __cls_init__(cls):
+        if hasattr(cls, "DOCKER"):
+            return
+        docker = lookup_in_PATH("docker")
+        try:
+            check_output([docker, "ps"])
+        except CalledProcessError as exc:
+            logger.error(
+                """\Failed to run %s (error code %d). Do you have permissions to run %s?
+--- command output: ---
+%s
+--- end command output ---
+""" % (exc.cmd, exc.returncode, docker, exc.output))
+        else:
+            cls.DOCKER = docker
+
+    def __init__(self):
+        self.__cls_init__()
+    
+    @classmethod
+    def _docker_call(cls):
+        return [cls.DOCKER]
+
+    def cmd(self, args):
+        try:
+            ret = check_output([self._docker_call()] + args)
+        except CalledProcessError as exc:
+            logger.error("%s returned %d, output:\n%s" % (exc.cmd, exc.returncode, exc.output))
+            raise
+        else:
+            return ret.rstrip()
+
+    def test_if_running(self, id):
+        try:
+            nid = self.cmd(["ps", "-q", "--no-trunc=true", "-f", "id=%s" % id])
+        except CalledProcessError:
+            return False
+        return nid == id
+
+    def get_ip(self, id):
+        return self.cmd([ "inspect", "-f", "{{.NetworkSettings.IPAddress}}", id])
+
+    def stop(self, id):
+        return self.cmd(["stop", id])
+        
+    def kill(self, id):
+        return self.cmd(["kill", id])
+        
+    def rm(self, id):
+        return self.cmd(["rm", id])
+        
+    def run(self, image, args):
+        return self.cmd(["run"] + args + [ image ])
+
+class DockerClientFactory(object):
+    def __call__(self):
+        return DockerClientCmdline()
+
 class ProxyContainer(object):
 
     SQUID_CONF = "squid.conf"
@@ -38,25 +119,8 @@ class ProxyContainer(object):
     def docker_path(cls, fn):
         return os.path.join(cls.SQUID_CONF_DIR, fn)
     
-    @classmethod
-    def __cls_init__(cls):
-        if hasattr(cls, "DOCKER"):
-            return
-        docker = lookup_in_PATH("docker")
-        try:
-            check_output([docker, "ps"])
-        except CalledProcessError as exc:
-            logger.error(
-                """\Failed to run %s (error code %d). Do you have permissions to run %s?
---- command output: ---
-%s
---- end command output ---
-""" % (exc.cmd, exc.returncode, docker, exc.output))
-        else:
-            cls.DOCKER = docker
-
     def __init__(self, port=None):
-        self.__cls_init__()
+        self._client = DockerClientFactory()()
         if port is None:
             port = 3128
         self._port = port
@@ -98,10 +162,6 @@ http_port {port}
         else:
             return "%s (not running)" % (self.__class__.__name__)
 
-    @classmethod
-    def _docker_call(cls):
-        return [cls.DOCKER]
-
     def _volumes(self):
         tmp = [ ["-v", "%s:%s" % (self.host_path(x), self.docker_path(x)) ] for x in self.files ]
         return reduce(lambda x, y: x + y, tmp)
@@ -109,13 +169,8 @@ http_port {port}
     def start(self, *args):
         if self.id is not None:
             raise RuntimeError("%s is already running" % self)
-        id = check_output(
-            self._docker_call() +
-            ["run", "-d"] +
-            # [  "--name", "python_squid_container" ] +
-            self._volumes() +
-            [ self.DOCKER_IMG ])
-        self.id = id.strip()
+        
+        self.id = self._client.run(self.DOCKER_IMG, self._volumes + ["-d"])
 
     def is_running(self):
         if self.id is None:
@@ -123,49 +178,34 @@ http_port {port}
 
     def get_ip(self):
         self.is_running()
-        ip = check_output([self.DOCKER,
-                           "inspect", "-f", "{{.NetworkSettings.IPAddress}}", self.id])
-        ip = ip.strip()
+        ip  = self._client.get_ip(self.id)
         if ip == "":
-            raise RuntimeError
+            raise RuntimeError("Unable to detect proxy IP address")
         return ip
 
     def test_if_running(self):
-        try:
-            id = check_output(
-                [self.DOCKER, "ps", "-q", "--no-trunc=true", "-f", "id=%s" % self.id])
-        except CalledProcessError as exc:
-            logger.error("%s returned %d, output:\n%s" % (exc.cmd, exc.returncode, exc.output))
-            id = ""
-        id = id.strip()
-        if id != self.id:
+        if not self._client.test_if_running():
             self.id = None
         self.is_running()
 
-    def remove(self):
-        try:
-            check_output(
-                [self.DOCKER, "rm", self.id])
-        except CalledProcessError:
-            logger.error("Failed to remove %s\n" % self)
+    def rm(self):
+        self._client.rm(self.id)
         
     def kill(self):
         self.is_running()
         try:
-            check_output(
-                [self.DOCKER, "kill", self.id])
+            self._client.kill(self.id)
         except CalledProcessError:
-            logger.error("Failed to kill %s\n" % self)
-            raise
-        self.id = None
+            pass
+        finally:
+            self.id = None
 
     def stop(self):
         self.is_running()
         try:
-            check_output(
-                [self.DOCKER, "stop", self.id])
+            self._client.stop(self.id)
         except CalledProcessError:
-            logger.warning("Failed to stop %s\n" % self)
+            pass
         else:
             self.id = None
 
@@ -218,7 +258,7 @@ http_port {port}
         self.leave_environment()
         try:
             self.kill()
-            self.remove()
+            self.rm()
             self.close()
         except:
             pass
