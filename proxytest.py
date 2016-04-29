@@ -308,8 +308,3 @@ if __name__ == "__main__":
             sys.stderr.write("== Opening shell, exit to quit ==\n")
             call(["/bin/bash"])
             sys.stderr.write("== Shell has exited, thank you ==\n")
-            
-    for p in ProxyContainer.env_vars:
-        try:
-            print "%s: %s" % (p, os.environ[p])
-        except KeyError: pass
