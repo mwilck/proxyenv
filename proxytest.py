@@ -1,6 +1,6 @@
 import sys
-import re
 import os
+import logging
 from time import sleep
 from shutil import rmtree
 from htpasswd import Basic
@@ -10,8 +10,6 @@ from docker import Client
 from docker.errors import NotFound
 from socket import socket, AF_INET, SOCK_STREAM, error as SocketError
 from datetime import datetime, timedelta
-
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +102,7 @@ class DockerClientCmdline(DockerClient):
 class DockerClientApi(DockerClient):
 
     def __init__(self):
-        self._clt = Client(base_url='unix://var/run/docker.sock', version="auto")
+        self._api = Client(base_url='unix://var/run/docker.sock', version="auto")
         self._containers = {}
 
     def get_container(self, id):
@@ -118,24 +116,24 @@ class DockerClientApi(DockerClient):
         return config["State"]
 
     def _get_config(self, id):
-        return self._clt.inspect_container(id)
+        return self._api.inspect_container(id)
 
     def get_ip(self, id):
         config = self._get_config(id)
         return config["NetworkSettings"]["IPAddress"]
 
     def stop(self, id):
-        self._clt.stop(id)
+        self._api.stop(id)
         
     def kill(self, id):
-        self._clt.kill(id)
+        self._api.kill(id)
         
     def rm(self, id):
-        self._clt.remove_container(id)
+        self._api.remove_container(id)
         del self._containers[id]
 
     def run(self, image, volumes, args):
-        hc = self._clt.create_host_config(
+        hc = self._api.create_host_config(
             binds = dict([(x, { "bind": y, "mode": "ro" }) for x, y in volumes.iteritems()]))
         vols = volumes.itervalues()
         kwargs = {
@@ -148,16 +146,31 @@ class DockerClientApi(DockerClient):
                 kwargs["detach"] = True
             else:
                 raise ValueError("unsupported argument %s" % x)
-        cont = self._clt.create_container(**kwargs)
+        cont = self._api.create_container(**kwargs)
         id = cont.get("Id")
         self._containers[id] = cont
-        self._clt.start(container=id)
+        self._api.start(container=id)
         return id
 
 class DockerClientFactory(object):
-    def __call__(self):
-#        return DockerClientCmdline()
-        return DockerClientApi()
+    _default = "api"
+
+    @classmethod
+    def set_default(cls, method):
+        if method in ("api", "cmdline"):
+            cls._default = method
+        else:
+            raise RuntimeError("method %s is unsupported" % method)
+
+    def __call__(self, method=None):
+        if method is None:
+            method = self._default
+        if method == "api":
+            return DockerClientApi()
+        elif method == "cmdline":
+            return DockerClientCmdline()
+        else:
+            raise RuntimeError("method %s is unsupported" % method)
 
 class ProxyContainer(object):
 
@@ -352,7 +365,6 @@ http_port {port}
         self.start()
         self.enter_environment()
         self.wait()
-        #sleep(0.1)
         return getter
 
     def __exit__(self, type, value, traceback):
@@ -416,6 +428,7 @@ if __name__ == "__main__":
     import urllib2
     from argparse import ArgumentParser
     logging.basicConfig()
+    # DockerClientFactory.set_default("cmdline")
     
     args = ArgumentParser()
     args.add_argument('URLs', metavar='URL', type=str, nargs='*',
