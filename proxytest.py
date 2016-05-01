@@ -3,9 +3,9 @@ import re
 import os
 from time import sleep
 from shutil import rmtree
-from subprocess import Popen, call, check_call, check_output, PIPE, CalledProcessError
 from htpasswd import Basic
 from tempfile import mkdtemp
+from subprocess import check_output, PIPE, CalledProcessError
 import logging
 
 logger = logging.getLogger(__name__)
@@ -95,6 +95,26 @@ class DockerClientCmdline(DockerClient):
         tmp = [ ["-v", "%s:%s" % (x, y) ] for x, y in volumes.iteritems() ]
         vol = reduce(lambda x, y: x + y, tmp)
         return self.cmd(["run"] + args + vol + [ image ])
+
+class DockerClientApi(DockerClient):
+
+    def test_if_running(self, id):
+        return False
+
+    def get_ip(self, id):
+        return ""
+
+    def stop(self, id):
+        pass
+        
+    def kill(self, id):
+        pass
+        
+    def rm(self, id):
+        pass
+
+    def run(self, image, args):
+        pass
 
 class DockerClientFactory(object):
     def __call__(self):
