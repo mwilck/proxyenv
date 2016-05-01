@@ -91,8 +91,10 @@ class DockerClientCmdline(DockerClient):
     def rm(self, id):
         return self.cmd(["rm", id])
         
-    def run(self, image, args):
-        return self.cmd(["run"] + args + [ image ])
+    def run(self, image, volumes, args):
+        tmp = [ ["-v", "%s:%s" % (x, y) ] for x, y in volumes.iteritems() ]
+        vol = reduce(lambda x, y: x + y, tmp)
+        return self.cmd(["run"] + args + vol + [ image ])
 
 class DockerClientFactory(object):
     def __call__(self):
@@ -107,6 +109,16 @@ class ProxyContainer(object):
     env_vars = ("http_proxy", "https_proxy")
     files = [ SQUID_CONF ]
 
+    STATE_OFF = 0
+    STATE_STOPPED = 1
+    STATE_RUNNING = 2
+
+    states = {
+        STATE_OFF: "off",
+        STATE_STOPPED: "stopped",
+        STATE_RUNNING: "running"
+    }
+    
     ### SQUID configuration - override in subclasses
     conf_auth = ""
     conf_acl = "acl localnet src 172.16.0.0/12"
@@ -128,10 +140,12 @@ class ProxyContainer(object):
         self._saved_env = {}
         self._tmpdir = mkdtemp()
         self.create_squid_conf()
-
+        self._state = self.STATE_OFF
+        
     def close(self):
         rmtree(self._tmpdir)
         self._tmpdir = None
+        self._state = self.STATE_OFF
 
     def create_squid_conf(self):
         with open(self.host_path(self.SQUID_CONF), "wb") as output:
@@ -154,26 +168,27 @@ http_port {port}
 """.format (auth=self.conf_auth, acl=self.conf_acl, allow=self.conf_allow, port=self._port))
 
     def short_id(self):
-        return self.id[:12]
-    
+        if self.id is None:
+            return None
+        return self.id[:12] 
     def __str__(self):
         if self.id is not None:
-            return "%s (running with id %s)" % (self.__class__.__name__, self.short_id())
+            return "%s (%s with id %s)" % (self.__class__.__name__, self._state, self.short_id())
         else:
-            return "%s (not running)" % (self.__class__.__name__)
+            return "%s (%s)" % (self.__class__.__name__, self._state)
 
     def _volumes(self):
-        tmp = [ ["-v", "%s:%s" % (self.host_path(x), self.docker_path(x)) ] for x in self.files ]
-        return reduce(lambda x, y: x + y, tmp)
+        return dict ( (self.host_path(x), self.docker_path(x)) for x in self.files )
 
     def start(self, *args):
         if self.id is not None:
             raise RuntimeError("%s is already running" % self)
         
-        self.id = self._client.run(self.DOCKER_IMG, ["-d"] + self._volumes())
-
+        self.id = self._client.run(self.DOCKER_IMG, self._volumes(), ["-d"] )
+        self._state = self.STATE_RUNNING
+        
     def is_running(self):
-        if self.id is None:
+        if self._state is not self.STATE_RUNNING:
             raise RuntimeError("%s is not running" % self)
 
     def get_ip(self):
@@ -184,12 +199,14 @@ http_port {port}
         return ip
 
     def test_if_running(self):
-        if self.id is not None and not self._client.test_if_running(self.id):
-            self.id = None
-        self.is_running()
+        if self._state is self.STATE_RUNNING:
+            if not self._client.test_if_running(self.id):
+                self._state = self.STATE_STOPPED
 
     def rm(self):
         self._client.rm(self.id)
+        self.id = None
+        self._state = self.STATE_OFF
         
     def kill(self):
         self.is_running()
@@ -197,8 +214,7 @@ http_port {port}
             self._client.kill(self.id)
         except CalledProcessError:
             pass
-        finally:
-            self.id = None
+        self._state = self.STATE_STOPPED
 
     def stop(self):
         self.is_running()
@@ -206,8 +222,7 @@ http_port {port}
             self._client.stop(self.id)
         except CalledProcessError:
             pass
-        else:
-            self.id = None
+        self._state = self.STATE_STOPPED
 
     def get_proxy(self):
         return "http://%s:%d" % (self.get_ip(), self._port)
@@ -249,7 +264,6 @@ http_port {port}
                 return self.get_ProxyHandler()
             
         self.start()
-        self.test_if_running()
         self.enter_environment()
         sleep(0.1)
         return getter
