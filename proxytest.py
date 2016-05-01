@@ -65,7 +65,7 @@ class DockerClientCmdline(DockerClient):
 
     def cmd(self, args):
         try:
-            ret = check_output([self._docker_call()] + args)
+            ret = check_output(self._docker_call() + args)
         except CalledProcessError as exc:
             logger.error("%s returned %d, output:\n%s" % (exc.cmd, exc.returncode, exc.output))
             raise
@@ -170,7 +170,7 @@ http_port {port}
         if self.id is not None:
             raise RuntimeError("%s is already running" % self)
         
-        self.id = self._client.run(self.DOCKER_IMG, self._volumes + ["-d"])
+        self.id = self._client.run(self.DOCKER_IMG, ["-d"] + self._volumes())
 
     def is_running(self):
         if self.id is None:
@@ -184,7 +184,7 @@ http_port {port}
         return ip
 
     def test_if_running(self):
-        if not self._client.test_if_running():
+        if self.id is not None and not self._client.test_if_running(self.id):
             self.id = None
         self.is_running()
 
