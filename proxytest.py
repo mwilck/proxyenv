@@ -7,6 +7,8 @@ from htpasswd import Basic
 from tempfile import mkdtemp
 from subprocess import check_output, PIPE, CalledProcessError
 from docker import Client
+from docker.errors import NotFound
+
 import logging
 
 logger = logging.getLogger(__name__)
@@ -100,29 +102,60 @@ class DockerClientCmdline(DockerClient):
 class DockerClientApi(DockerClient):
 
     def __init__(self):
-        self._clt = Client()
+        self._clt = Client(base_url='unix://var/run/docker.sock', version="auto")
+        self._containers = {}
 
+    def get_container(self, id):
+        return self._containers[id]
+        
     def test_if_running(self, id):
-        return False
+        try:
+            config = self._get_config(id)
+        except NotFound:
+            return False
+        return config["State"]
+
+    def _get_config(self, id):
+        return self._clt.inspect_container(id)
 
     def get_ip(self, id):
-        return ""
+        config = self._get_config(id)
+        return config["NetworkSettings"]["IPAddress"]
 
     def stop(self, id):
-        pass
+        self._clt.stop(id)
         
     def kill(self, id):
-        pass
+        self._clt.kill(id)
         
     def rm(self, id):
-        pass
+        self._clt.remove_container(id)
+        del self._containers[id]
 
     def run(self, image, volumes, args):
-        pass
+        hc = self._clt.create_host_config(
+            binds = dict([(x, { "bind": y, "mode": "ro" }) for x, y in volumes.iteritems()]))
+        vols = volumes.itervalues()
+        kwargs = {
+            "image": image,
+            "volumes": volumes.values(),
+            "host_config": hc
+        }
+        for x in args:
+            if x == "-d":
+                kwargs["detach"] = True
+            else:
+                raise ValueError("unsupported argument %s" % x)
+        cont = self._clt.create_container(**kwargs)
+        id = cont.get("Id")
+        self._containers[id] = cont
+        self._clt.start(container=id)
+        return id
 
 class DockerClientFactory(object):
     def __call__(self):
-        return DockerClientCmdline()
+#        return DockerClientCmdline()
+        return DockerClientApi()
 
 class ProxyContainer(object):
 
@@ -212,7 +245,7 @@ http_port {port}
         self._state = self.STATE_RUNNING
         
     def is_running(self):
-        if self._state is not self.STATE_RUNNING:
+        if self.id is None or self._state is not self.STATE_RUNNING:
             raise RuntimeError("%s is not running" % self)
 
     def get_ip(self):
