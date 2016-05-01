@@ -6,6 +6,7 @@ from shutil import rmtree
 from htpasswd import Basic
 from tempfile import mkdtemp
 from subprocess import check_output, PIPE, CalledProcessError
+from docker import Client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ class DockerClient(object):
     def rm(self, id):
         pass
 
-    def run(self, image, args):
+    def run(self, image, volumes, args):
         pass
 
 class DockerClientCmdline(DockerClient):
@@ -98,6 +99,9 @@ class DockerClientCmdline(DockerClient):
 
 class DockerClientApi(DockerClient):
 
+    def __init__(self):
+        self._clt = Client()
+
     def test_if_running(self, id):
         return False
 
@@ -113,7 +117,7 @@ class DockerClientApi(DockerClient):
     def rm(self, id):
         pass
 
-    def run(self, image, args):
+    def run(self, image, volumes, args):
         pass
 
 class DockerClientFactory(object):
