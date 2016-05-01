@@ -8,6 +8,8 @@ from tempfile import mkdtemp
 from subprocess import check_output, PIPE, CalledProcessError
 from docker import Client
 from docker.errors import NotFound
+from socket import socket, AF_INET, SOCK_STREAM, error as SocketError
+from datetime import datetime, timedelta
 
 import logging
 
@@ -244,6 +246,35 @@ http_port {port}
         self.id = self._client.run(self.DOCKER_IMG, self._volumes(), ["-d"] )
         self._state = self.STATE_RUNNING
         
+    def wait(self):
+        self.is_running()
+        ip = self.get_ip()
+        ok = False
+        begin = datetime.now()
+        waitfor = timedelta(seconds=10)
+        while not ok and datetime.now() - begin  < waitfor:
+            try:
+                sock = socket(AF_INET, SOCK_STREAM)
+                try:
+                    sock.connect((ip, self._port))
+                except SocketError, exc:
+                    if exc.errno == 111:
+                        sleep(0.1)
+                    else:
+                        raise
+                else:
+                    ok = True
+            finally:
+                sock.close()
+        if ok:
+            logger.info("proxy was up after %s" % (datetime.now() - begin))
+        else:
+            logger.error("proxy was not up after 10 seconds")
+            self.kill()
+            self.rm()
+            raise RuntimeError("Proxy timeout")
+        return ok
+
     def is_running(self):
         if self.id is None or self._state is not self.STATE_RUNNING:
             raise RuntimeError("%s is not running" % self)
@@ -266,7 +297,6 @@ http_port {port}
         self._state = self.STATE_OFF
         
     def kill(self):
-        self.is_running()
         try:
             self._client.kill(self.id)
         except CalledProcessError:
@@ -274,7 +304,6 @@ http_port {port}
         self._state = self.STATE_STOPPED
 
     def stop(self):
-        self.is_running()
         try:
             self._client.stop(self.id)
         except CalledProcessError:
@@ -322,7 +351,8 @@ http_port {port}
             
         self.start()
         self.enter_environment()
-        sleep(0.1)
+        self.wait()
+        #sleep(0.1)
         return getter
 
     def __exit__(self, type, value, traceback):
