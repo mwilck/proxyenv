@@ -5,7 +5,7 @@ from time import sleep
 from shutil import rmtree
 from htpasswd import Basic
 from tempfile import mkdtemp
-from subprocess import check_output, PIPE, CalledProcessError
+from subprocess import check_output, PIPE, CalledProcessError, call
 from docker import Client
 from docker.errors import NotFound
 from socket import socket, AF_INET, SOCK_STREAM, error as SocketError
