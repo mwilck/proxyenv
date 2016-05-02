@@ -12,6 +12,7 @@ from socket import socket, AF_INET, SOCK_STREAM, error as SocketError
 from datetime import datetime, timedelta
 from traceback import format_stack
 from errno import ECONNREFUSED
+__all__ = [ "ProxyFactory", "DockerClientFactory" ]
 
 logger = logging.getLogger(__name__)
 
@@ -196,8 +197,8 @@ Class representing a squid proxy running in a docker container.
 This base class allows access from the docker internal network.
 This class can be used as a context generator for the with statement.
 
-The object returned by with in the "as" clause is a "getter" funcion
-that supports the parameters "proxy" or "handler", and returns
+The object returned by with in the "as" clause is a "getter" object
+that supports the methods "get_proxy()" or "get_handler()", and returns
 the proxy to use or the urllib2 ProxyHandler object, respectively.
 """
 
@@ -319,6 +320,7 @@ http_port {port}
         self.assert_state(self.STATE_INIT)
         self._id = self._client.run(self.DOCKER_IMG, self._volumes(), ["-d"] )
         self._state = self.STATE_RUNNING
+        logger.debug("created: %s" % self)
 
     def wait(self):
         """Wait for the squid proxy to be operational (call after start)"""
@@ -343,7 +345,7 @@ http_port {port}
                 sock.close()
         if ok:
             self._state = self.STATE_UP
-            logger.info("proxy was up after %s" % (datetime.now() - begin))
+            logger.debug("proxy was up after %s" % (datetime.now() - begin))
         else:
             logger.error("proxy was not up after %d seconds", self.TIMEOUT)
             self.stop()
@@ -432,17 +434,22 @@ Use get_ProxyHandler() and urllib2.build_opener instead to affect python calls."
                 os.environ[p] = var
             del self._saved_env[p]
 
-    def __enter__(self):
-        def getter(arg):
-            if arg == "proxy":
-                return self.get_proxy()
-            elif arg == "handler":
-                return self.get_ProxyHandler()
+    class ProxyGetter(object):
+        """Utility class for retrieving proxy properties in with statement"""
+        def __init__(self, proxy):
+            self.__proxy = proxy
+        def get_proxy(self):
+            """Return proxy setting"""
+            return self.__proxy.get_proxy()
+        def get_handler(self):
+            """Return urllib2 ProxyHandler object"""
+            return self.__proxy.get_ProxyHandler()
 
+    def __enter__(self):
         self.start()
         self.wait()
         self.enter_environment()
-        return getter
+        return self.ProxyGetter(self)
 
     def __exit__(self, type, value, traceback):
         self.leave_environment()
@@ -538,7 +545,7 @@ if __name__ == "__main__":
         print_real_environment()
 
         opener = urllib2.build_opener(
-            proxy("handler"),
+            proxy.get_handler(),
             urllib2.HTTPHandler(debuglevel=1),
             urllib2.HTTPSHandler(debuglevel=1))
 
