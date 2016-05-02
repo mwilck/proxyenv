@@ -34,7 +34,7 @@ setup(
             'proxyenv = proxyenv.proxyenv:main',
         ]
     },
-    keywords = 'squid, testing, http, proxy, docker'
+    keywords = 'squid, testing, http, proxy, docker',
 
     # See https://pypi.python.org/pypi?:action=list_classifiers
     classifiers=[
