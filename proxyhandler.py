@@ -1,6 +1,7 @@
 import sys
 import os
 import logging
+from six import iteritems, itervalues
 from time import sleep
 from shutil import rmtree
 from htpasswd import Basic
@@ -106,7 +107,7 @@ class DockerClientCmdline(DockerClient):
         return self.cmd(["rm", id])
 
     def run(self, image, volumes, args):
-        tmp = [ ["-v", "%s:%s" % (x, y) ] for x, y in volumes.iteritems() ]
+        tmp = [ ["-v", "%s:%s" % (x, y) ] for x, y in iteritems(volumes) ]
         vol = reduce(lambda x, y: x + y, tmp)
         return self.cmd(["run"] + args + vol + [ image ])
 
@@ -146,11 +147,10 @@ class DockerClientApi(DockerClient):
 
     def run(self, image, volumes, args):
         hc = self._api.create_host_config(
-            binds = dict([(x, { "bind": y, "mode": "ro" }) for x, y in volumes.iteritems()]))
-        vols = volumes.itervalues()
+            binds = dict([(x, { "bind": y, "mode": "ro" }) for x, y in iteritems(volumes)]))
         kwargs = {
             "image": image,
-            "volumes": volumes.values(),
+            "volumes": list(volumes.values()),
             "host_config": hc
         }
         for x in args:
@@ -283,7 +283,7 @@ the proxy to use or the urllib2 ProxyHandler object, respectively.
         self._state = self.STATE_INIT
 
     def create_squid_conf(self):
-        with open(self.host_path(self.SQUID_CONF), "wb") as output:
+        with open(self.host_path(self.SQUID_CONF), "wt") as output:
             output.write("""\
 {auth}
 acl SSL_ports port 443
@@ -412,7 +412,7 @@ Set proxy environment variables.
 CAUTION: this will not affect the running python instance, only exec'd children.
 Use get_ProxyHandler() and urllib2.build_opener instead to affect python calls."""
         self.assert_state(self.STATE_UP)
-        if self._saved_env.has_key(self.env_vars[0]):
+        if self.env_vars[0] in self._saved_env:
             return
         proxy = self.get_proxy()
         for p in self.env_vars:
@@ -424,7 +424,7 @@ Use get_ProxyHandler() and urllib2.build_opener instead to affect python calls."
 
     def leave_environment(self):
         """Restore proxy environment variables"""
-        if not self._saved_env.has_key(self.env_vars[0]):
+        if self.env_vars[0] not in self._saved_env:
             return
         for p in self.env_vars:
             var = self._saved_env[p]
@@ -530,7 +530,7 @@ def commandline_args():
 
 if __name__ == "__main__":
 
-    import urllib2
+    from six.moves.urllib import request as urllib2
     logging.basicConfig(level=logging.INFO)
     options = commandline_args()
 
