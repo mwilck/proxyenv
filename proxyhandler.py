@@ -543,11 +543,12 @@ if __name__ == "__main__":
 
         print_py_environment()
         print_real_environment()
+        dbglvl = 1 if options.verbose else 0
 
         opener = urllib2.build_opener(
             proxy.get_handler(),
-            urllib2.HTTPHandler(debuglevel=1),
-            urllib2.HTTPSHandler(debuglevel=1))
+            urllib2.HTTPHandler(debuglevel=dbglvl),
+            urllib2.HTTPSHandler(debuglevel=dbglvl))
 
         if options.wait:
             raw_input("Waiting. Hit enter to quit")
