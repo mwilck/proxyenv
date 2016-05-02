@@ -168,6 +168,10 @@ class DockerClientFactory(object):
     _default = "api"
 
     @classmethod
+    def get_default(cls):
+        return cls._default
+
+    @classmethod
     def set_default(cls, method):
         """Set default implementation method ("api" or "cmdline")"""
         if method in ("api", "cmdline"):
@@ -510,7 +514,7 @@ def commandline_args():
     args.add_argument('-u', '--user', help='proxy user in user:password format')
     args.add_argument('-i', '--impl',
                       help='set implementaton (cmdline or api, default: %s)'
-                      % DockerClientFactory._default)
+                      % DockerClientFactory.get_default)
     args.add_argument('-s', '--shell', help='open a shell in new environment',
                       action='store_true')
     args.add_argument('-w', '--wait', help='wait for input', action='store_true')
