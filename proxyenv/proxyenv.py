@@ -2,6 +2,7 @@ import sys
 import os
 import logging
 from six import iteritems, itervalues
+from six.moves.urllib.request import ProxyHandler
 from time import sleep
 from shutil import rmtree
 from htpasswd import Basic
@@ -13,7 +14,7 @@ from socket import socket, AF_INET, SOCK_STREAM, error as SocketError
 from datetime import datetime, timedelta
 from traceback import format_stack
 from errno import ECONNREFUSED
-__all__ = [ "ProxyFactory", "DockerClientFactory" ]
+__all__ = [ "DockerClient", "ProxyContainer", "ProxyFactory", "DockerClientFactory" ]
 
 logger = logging.getLogger(__name__)
 
@@ -404,7 +405,7 @@ http_port {port}
 
     def get_ProxyHandler(self):
         """Return suitable urllib2 ProxyHandler object"""
-        return urllib2.ProxyHandler(self.get_proxies())
+        return ProxyHandler(self.get_proxies())
 
     def enter_environment(self):
         """\
@@ -521,15 +522,15 @@ def commandline_args():
     args.add_argument('-u', '--user', help='proxy user in user:password format')
     args.add_argument('-i', '--impl',
                       help='set implementaton (cmdline or api, default: %s)'
-                      % DockerClientFactory.get_default)
+                      % DockerClientFactory.get_default())
     args.add_argument('-s', '--shell', help='open a shell in new environment',
                       action='store_true')
     args.add_argument('-w', '--wait', help='wait for input', action='store_true')
     args.add_argument('-v', '--verbose', help='verbose output', action='store_true')
     return args.parse_args()
 
-if __name__ == "__main__":
-
+def main():
+    
     from six.moves.urllib import request as urllib2
     logging.basicConfig(level=logging.INFO)
     options = commandline_args()
@@ -561,3 +562,7 @@ if __name__ == "__main__":
             sys.stderr.write("== Opening shell, exit to quit ==\n")
             call(["/bin/bash"])
             sys.stderr.write("== Shell has exited, thank you ==\n")
+
+if __name__ == "__main__":
+    main()
+
