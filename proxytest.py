@@ -10,6 +10,8 @@ from docker import Client
 from docker.errors import NotFound
 from socket import socket, AF_INET, SOCK_STREAM, error as SocketError
 from datetime import datetime, timedelta
+from traceback import format_stack
+from errno import ECONNREFUSED
 
 logger = logging.getLogger(__name__)
 
@@ -198,24 +200,63 @@ the proxy to use or the urllib2 ProxyHandler object, respectively.
     SQUID_CONF = "squid.conf"
     SQUID_CONF_DIR = "/etc/squid3"
     DOCKER_IMG = "docker.io/sameersbn/squid"
+    # Max seconds to wait for squid to come up
+    TIMEOUT = 10
 
     env_vars = ("http_proxy", "https_proxy")
     files = [ SQUID_CONF ]
 
-    STATE_OFF = 0
-    STATE_STOPPED = 1
-    STATE_RUNNING = 2
+    STATE_INIT = 0
+    STATE_OFF = 1
+    STATE_STOPPED = 2
+    STATE_RUNNING = 3
+    STATE_UP = 4
+    STATE_DESTROYED = 5
 
     states = {
+        STATE_INIT: "initializing",
         STATE_OFF: "off",
         STATE_STOPPED: "stopped",
-        STATE_RUNNING: "running"
+        STATE_RUNNING: "running",
+        STATE_UP: "up",
+        STATE_DESTROYED: "destroyed"
     }
+
+    all_states = set(states.keys())
 
     ### SQUID configuration - override in subclasses
     conf_auth = ""
     conf_acl = "acl localnet src 172.16.0.0/12"
     conf_allow = "http_access allow localnet"
+
+    class WrongState(RuntimeError):
+        def __init__(self, proxy):
+            RuntimeError.__init__(self, "Unexpected state: %s" % proxy)
+
+    def assert_id(self):
+        assert(self._id is not None)
+
+    def get_id(self):
+        """Return container ID"""
+        self.assert_id()
+        return self._id
+
+    def assert_state(self, *allowed):
+        """Check internal status"""
+        if self._state in allowed:
+            return
+        raise self.WrongState(self)
+
+    def is_running(self):
+        """Check that container is running"""
+        self.assert_state(self.STATE_RUNNING, self.STATE_UP)
+
+    def check_state(self, *allowed):
+        try:
+            self.assert_state(*allowed)
+        except self.WrongState:
+            si = sys.exc_info()
+            logger.warning("%s:\n%s" % (si[1], "".join(format_stack(limit=2))))
 
     def host_path(self, fn):
         return os.path.join(self._tmpdir, fn)
@@ -230,16 +271,11 @@ the proxy to use or the urllib2 ProxyHandler object, respectively.
         if port is None:
             port = 3128
         self._port = port
-        self.id = None
+        self._id = None
         self._saved_env = {}
         self._tmpdir = mkdtemp()
         self.create_squid_conf()
-        self._state = self.STATE_OFF
-
-    def close(self):
-        rmtree(self._tmpdir)
-        self._tmpdir = None
-        self._state = self.STATE_OFF
+        self._state = self.STATE_INIT
 
     def create_squid_conf(self):
         with open(self.host_path(self.SQUID_CONF), "wb") as output:
@@ -262,40 +298,38 @@ http_port {port}
 """.format (auth=self.conf_auth, acl=self.conf_acl, allow=self.conf_allow, port=self._port))
 
     def short_id(self):
-        if self.id is None:
-            return None
-        return self.id[:12]
+        return self.get_id()[:12]
+
     def __str__(self):
-        if self.id is not None:
-            return "%s (%s with id %s)" % (self.__class__.__name__, self._state, self.short_id())
+        if self._id is not None:
+            return "%s (%s with id %s)" % (self.__class__.__name__,
+                                           self.states[self._state], self.short_id())
         else:
-            return "%s (%s)" % (self.__class__.__name__, self._state)
+            return "%s (%s)" % (self.__class__.__name__, self.states[self._state])
 
     def _volumes(self):
         return dict ( (self.host_path(x), self.docker_path(x)) for x in self.files )
 
     def start(self, *args):
         """Create and run the container"""
-        if self.id is not None:
-            raise RuntimeError("%s is already running" % self)
-
-        self.id = self._client.run(self.DOCKER_IMG, self._volumes(), ["-d"] )
+        self.assert_state(self.STATE_INIT)
+        self._id = self._client.run(self.DOCKER_IMG, self._volumes(), ["-d"] )
         self._state = self.STATE_RUNNING
 
     def wait(self):
         """Wait for the squid proxy to be operational (call after start)"""
-        self.is_running()
+        self.assert_state(self.STATE_RUNNING, self.STATE_UP)
         ip = self.get_ip()
         ok = False
         begin = datetime.now()
-        waitfor = timedelta(seconds=10)
+        waitfor = timedelta(seconds=self.TIMEOUT)
         while not ok and datetime.now() - begin  < waitfor:
             try:
                 sock = socket(AF_INET, SOCK_STREAM)
                 try:
                     sock.connect((ip, self._port))
-                except SocketError, exc:
-                    if exc.errno == 111:
+                except SocketError as exc:
+                    if exc.errno == ECONNREFUSED:
                         sleep(0.1)
                     else:
                         raise
@@ -304,58 +338,58 @@ http_port {port}
             finally:
                 sock.close()
         if ok:
+            self._state = self.STATE_UP
             logger.info("proxy was up after %s" % (datetime.now() - begin))
         else:
-            logger.error("proxy was not up after 10 seconds")
-            self.kill()
-            self.rm()
+            logger.error("proxy was not up after %d seconds", self.TIMEOUT)
+            self.stop()
             raise RuntimeError("Proxy timeout")
         return ok
-
-    def is_running(self):
-        """Check internal status"""
-        if self.id is None or self._state is not self.STATE_RUNNING:
-            raise RuntimeError("%s is not running" % self)
 
     def get_ip(self):
         """Returns proxy IPv4 address"""
         self.is_running()
-        ip  = self._client.get_ip(self.id)
+        ip  = self._client.get_ip(self.get_id())
         if ip == "":
             raise RuntimeError("Unable to detect proxy IP address")
         return ip
 
     def test_if_running(self):
         """Check status of docker container using client call"""
-        if self._state is self.STATE_RUNNING:
-            if not self._client.test_if_running(self.id):
+        if self._state in (self.STATE_RUNNING, self.STATE_UP):
+            if not self._client.test_if_running(self.get_id()):
                 self._state = self.STATE_STOPPED
 
-    def rm(self):
-        """Remove container"""
-        self._client.rm(self.id)
-        self.id = None
-        self._state = self.STATE_OFF
+    def _close(self):
+        rmtree(self._tmpdir)
+        self._tmpdir = None
+        self._state = self.STATE_DESTROYED
 
-    def kill(self):
-        """Kill container"""
-        try:
-            self._client.kill(self.id)
-        except CalledProcessError:
-            pass
-        self._state = self.STATE_STOPPED
+    def _rm(self):
+        """Remove container"""
+        self._client.rm(self.get_id())
+        self._id = None
+        self._state = self.STATE_DESTROYED
+        self._close()
 
     def stop(self):
-        """Stop container"""
+        """Stop container. Object can't be used any more after this."""
+
+        self.check_state(self.STATE_UP, self.STATE_RUNNING)
         try:
-            self._client.stop(self.id)
+            self._client.kill(self.get_id())
         except CalledProcessError:
             pass
         self._state = self.STATE_STOPPED
+        self._rm()
+
+    def _get_proxy(self):
+        return "http://%s:%d" % (self.get_ip(), self._port)
 
     def get_proxy(self):
         """Return proxy address to use"""
-        return "http://%s:%d" % (self.get_ip(), self._port)
+        self.assert_state(self.STATE_UP)
+        return self._get_proxy()
 
     def get_proxies(self):
         """Return dictionary of proxy addresses"""
@@ -371,6 +405,7 @@ http_port {port}
 Set proxy environment variables.
 CAUTION: this will not affect the running python instance, only exec'd children.
 Use get_ProxyHandler() and urllib2.build_opener instead to affect python calls."""
+        self.assert_state(self.STATE_UP)
         if self._saved_env.has_key(self.env_vars[0]):
             return
         proxy = self.get_proxy()
@@ -401,16 +436,14 @@ Use get_ProxyHandler() and urllib2.build_opener instead to affect python calls."
                 return self.get_ProxyHandler()
 
         self.start()
-        self.enter_environment()
         self.wait()
+        self.enter_environment()
         return getter
 
     def __exit__(self, type, value, traceback):
         self.leave_environment()
         try:
-            self.kill()
-            self.rm()
-            self.close()
+            self.stop()
         except:
             pass
 
@@ -437,7 +470,7 @@ class ProxyContainerBasic(ProxyContainer):
             userdb.add(self._user, self._password)
         self.files.append(self.HTPASSWD)
 
-    def get_proxy(self):
+    def _get_proxy(self):
         user = "%s:%s@" % (self._user, self._password)
         return "http://%s%s:%d" % (user, self.get_ip(), self._port)
 
@@ -451,38 +484,54 @@ class ProxyFactory():
         else:
             return ProxyContainer(port=port)
 
+def print_py_environment():
+    logger.debug("== Environment from os.environ ==")
+    for p in ProxyContainer.env_vars:
+        logger.debug("%s => %s" % (p, os.environ[p]))
+
 def print_real_environment():
     env = open("/proc/%d/environ" % os.getpid()).read()
+    logger.debug("== Environment from /proc/%d/environ: ==" % os.getpid())
     for x in env.split("\0"):
         try:
             var, val = x.split("=", 1)
         except ValueError:
-            # empty line?
+            # empty line
             continue
         if var.endswith("_proxy"):
-            print "%s => %s (%s)" % (var, val, os.environ[var])
+            logger.debug("%s => %s" % (var, val))
 
-if __name__ == "__main__":
-
-    import urllib2
+def commandline_args():
     from argparse import ArgumentParser
-    logging.basicConfig()
-    # DockerClientFactory.set_default("cmdline")
-
     args = ArgumentParser()
     args.add_argument('URLs', metavar='URL', type=str, nargs='*',
                       help = 'an URL to retrieve')
     args.add_argument('-p', '--port', type=int, help='proxy port to use (default: 3128)')
     args.add_argument('-u', '--user', help='proxy user in user:password format')
-    args.add_argument('-s', '--shell', help='open a shell in new environment', action='store_true')
+    args.add_argument('-i', '--impl',
+                      help='set implementaton (cmdline or api, default: %s)'
+                      % DockerClientFactory._default)
+    args.add_argument('-s', '--shell', help='open a shell in new environment',
+                      action='store_true')
     args.add_argument('-w', '--wait', help='wait for input', action='store_true')
+    args.add_argument('-v', '--verbose', help='verbose output', action='store_true')
+    return args.parse_args()
 
-    options = args.parse_args()
+if __name__ == "__main__":
+
+    import urllib2
+    logging.basicConfig(level=logging.INFO)
+    options = commandline_args()
+
+    if options.verbose:
+        logger.setLevel(logging.DEBUG)
+    if options.impl:
+        DockerClientFactory.set_default(options.impl)
 
     with ProxyFactory()(port=options.port, user=options.user) as proxy:
 
-        for p in ProxyContainer.env_vars:
-            print "%s: %s" % (p, os.environ[p])
+        print_py_environment()
+        print_real_environment()
 
         opener = urllib2.build_opener(
             proxy("handler"),
@@ -490,12 +539,11 @@ if __name__ == "__main__":
             urllib2.HTTPSHandler(debuglevel=1))
 
         if options.wait:
-            print_real_environment()
             raw_input("Waiting. Hit enter to quit")
 
         for url in options.URLs:
             resp = opener.open(url)
-            print "Code: %d\n%s\n" % (resp.code, resp.info())
+            logger.info("Code: %d\n%s\n" % (resp.code, resp.info()))
 
         if options.shell:
             sys.stderr.write("== Opening shell, exit to quit ==\n")
