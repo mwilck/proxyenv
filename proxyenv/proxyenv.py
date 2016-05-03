@@ -3,6 +3,7 @@ import os
 import logging
 from six import iteritems, itervalues
 from six.moves.urllib.request import ProxyHandler
+from six.moves.urllib.parse import urlparse
 from time import sleep
 from shutil import rmtree
 from htpasswd import Basic
@@ -201,7 +202,9 @@ This class can be used as a context generator for the with statement.
 The object returned by with in the "as" clause is a "getter" object
 that supports the methods "get_proxy()" or "get_handler()", and returns
 the proxy to use or the urllib2 ProxyHandler object, respectively.
-"""
+
+If an existing proxy is already configured via the http_proxy environment
+variable, this proxy will be used by the Squid proxy as "cache peer"."""
 
     SQUID_CONF = "squid.conf"
     SQUID_CONF_DIR = "/etc/squid3"
@@ -283,9 +286,32 @@ the proxy to use or the urllib2 ProxyHandler object, respectively.
         self.create_squid_conf()
         self._state = self.STATE_INIT
 
+    @staticmethod
+    def detect_parent_proxy():
+        """Return squid configuration to use a parent proxy if a proxy is already configured
+in the environment."""
+        if "http_proxy" not in os.environ:
+            return ""
+
+        parent = urlparse(os.environ["http_proxy"])
+        if parent.scheme != "http":
+            logger.warning("parent proxy scheme %s in unsupported" % parent.scheme)
+            return ""
+
+        logger.debug("Parent proxy detected: %s" % parent.geturl())
+        login = "login=%s:%s" % (parent.username, parent.password) if parent.username else ""
+
+        # See http://www.christianschenk.org/blog/using-a-parent-proxy-with-squid/
+        # http://www.squid-cache.org/Doc/config/cache_peer/
+        parent = """\
+cache_peer {host} parent {port} 0 no-query no-digest {login}
+never_direct allow all
+""".format (host = parent.hostname, port=parent.port, login=login)
+        return parent
+
     def create_squid_conf(self):
-        with open(self.host_path(self.SQUID_CONF), "wt") as output:
-            output.write("""\
+        parent = self.detect_parent_proxy()
+        conf = """\
 {auth}
 acl SSL_ports port 443
 acl Safe_ports port 80
@@ -301,7 +327,12 @@ http_access deny to_localhost
 http_access allow localhost
 http_access deny all
 http_port {port}
-""".format (auth=self.conf_auth, acl=self.conf_acl, allow=self.conf_allow, port=self._port))
+{parent}
+""".format (auth=self.conf_auth, acl=self.conf_acl, allow=self.conf_allow, port=self._port,
+            parent=parent)
+        logger.debug("Squid configuration:\n%s" % conf)
+        with open(self.host_path(self.SQUID_CONF), "wt") as output:
+            output.write(conf)
 
     def short_id(self):
         return self.get_id()[:12]

@@ -2,6 +2,10 @@
 
 This is a python module that starts a [Squid](http://www.squid-cache.org/) proxy running in a docker container, and sets up an environment for using this proxy to handle HTTP(S) requests both from python code and external programs. The purpose is mainly for testing proxy support in code that needs to make HTTP(S) requests. The proxy supports both HTTP and HTTPS, and Basic proxy authorization.
 
+## Using an existing HTTP proxy
+
+If a proxy is already set in the `http_proxy` environment variable, the newly created squid proxy will still work by using the existing proxy as "cache peer". If you don't want this, delete `http_proxy` from the environment before starting the temporary proxy.
+
 ## Usage
 
 ```
@@ -35,7 +39,7 @@ positional arguments:
 
 optional arguments:
   -h, --help            show this help message and exit
-  -p PORT, --port PORT  proxy port to use (default: 3128)
+  -p PORT, --port PORT  proxyport to use (default: 3128)
   -u USER, --user USER  proxy user in user:password format
   -i IMPL, --impl IMPL  set implementaton (cmdline or api, default: api)
   -s, --shell           open a shell in new environment
